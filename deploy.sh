@@ -1,0 +1,238 @@
+#!/bin/bash
+# deploy.sh - Deploy zshrc configuration to home directory
+# Usage: ./deploy.sh [--force]
+#
+# This script:
+# 1. Checks for additions in remote (~/) not present in local
+# 2. Shows diffs between local and remote files
+# 3. Creates timestamped backups before overwriting
+# 4. Copies all configuration files
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Paths
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOME_ZSHRC="$HOME/.zshrc"
+HOME_ZSH_DIR="$HOME/.zsh"
+LOCAL_ZSHRC="$SCRIPT_DIR/zshrc"
+LOCAL_ZSH_DIR="$SCRIPT_DIR/.zsh"
+BACKUP_DIR="$HOME/.zsh-backup/$(date +%Y%m%d_%H%M%S)"
+
+FORCE=0
+if [[ "$1" == "--force" || "$1" == "-f" ]]; then
+  FORCE=1
+fi
+
+echo -e "${BLUE}=== Zshrc Deployment Script ===${NC}"
+echo ""
+
+# ============================================================================
+# CHECK FOR ADDITIONS IN REMOTE NOT IN LOCAL
+# ============================================================================
+
+check_remote_additions() {
+  local has_additions=0
+
+  echo -e "${YELLOW}Checking for additions in ~/ not in local...${NC}"
+
+  # Check ~/.zshrc for unique content
+  if [[ -f "$HOME_ZSHRC" ]]; then
+    # Extract non-comment, non-empty lines and compare
+    local remote_lines=$(grep -v '^[[:space:]]*#' "$HOME_ZSHRC" 2>/dev/null | grep -v '^[[:space:]]*$' | sort -u)
+    local local_lines=$(grep -v '^[[:space:]]*#' "$LOCAL_ZSHRC" 2>/dev/null | grep -v '^[[:space:]]*$' | sort -u)
+
+    # Find lines in remote not in local
+    local unique_remote=$(comm -23 <(echo "$remote_lines") <(echo "$local_lines") 2>/dev/null || true)
+
+    if [[ -n "$unique_remote" ]]; then
+      echo -e "${RED}WARNING: ~/.zshrc has content not in local:${NC}"
+      echo "$unique_remote" | head -20
+      if [[ $(echo "$unique_remote" | wc -l) -gt 20 ]]; then
+        echo "... (more lines not shown)"
+      fi
+      echo ""
+      has_additions=1
+    fi
+  fi
+
+  # Check for .zsh files in home that don't exist locally
+  if [[ -d "$HOME_ZSH_DIR" ]]; then
+    for remote_file in "$HOME_ZSH_DIR"/*.zsh; do
+      [[ -f "$remote_file" ]] || continue
+      local filename=$(basename "$remote_file")
+      local local_file="$LOCAL_ZSH_DIR/$filename"
+
+      if [[ ! -f "$local_file" ]]; then
+        echo -e "${RED}WARNING: ~/.zsh/$filename exists remotely but not locally!${NC}"
+        has_additions=1
+      fi
+    done
+  fi
+
+  return $has_additions
+}
+
+# ============================================================================
+# SHOW DIFFS
+# ============================================================================
+
+show_diffs() {
+  echo -e "${YELLOW}Checking for differences...${NC}"
+  echo ""
+
+  local has_diff=0
+
+  # Check .zshrc
+  if [[ -f "$HOME_ZSHRC" ]]; then
+    if ! diff -q "$LOCAL_ZSHRC" "$HOME_ZSHRC" >/dev/null 2>&1; then
+      echo -e "${BLUE}--- ~/.zshrc differences ---${NC}"
+      diff --color=auto -u "$HOME_ZSHRC" "$LOCAL_ZSHRC" 2>/dev/null | head -50 || true
+      echo ""
+      has_diff=1
+    fi
+  else
+    echo -e "${GREEN}~/.zshrc does not exist (will create)${NC}"
+    has_diff=1
+  fi
+
+  # Check .zsh directory files
+  for local_file in "$LOCAL_ZSH_DIR"/*.zsh; do
+    [[ -f "$local_file" ]] || continue
+    local filename=$(basename "$local_file")
+    local remote_file="$HOME_ZSH_DIR/$filename"
+
+    if [[ -f "$remote_file" ]]; then
+      if ! diff -q "$local_file" "$remote_file" >/dev/null 2>&1; then
+        echo -e "${BLUE}--- ~/.zsh/$filename differences ---${NC}"
+        diff --color=auto -u "$remote_file" "$local_file" 2>/dev/null | head -30 || true
+        echo ""
+        has_diff=1
+      fi
+    else
+      echo -e "${GREEN}~/.zsh/$filename does not exist (will create)${NC}"
+      has_diff=1
+    fi
+  done
+
+  # Return 0 (success) if differences found, 1 (failure) if none
+  [[ $has_diff -eq 1 ]] && return 0 || return 1
+}
+
+# ============================================================================
+# CREATE BACKUPS
+# ============================================================================
+
+create_backups() {
+  echo -e "${YELLOW}Creating backups in $BACKUP_DIR${NC}"
+  mkdir -p "$BACKUP_DIR"
+
+  if [[ -f "$HOME_ZSHRC" ]]; then
+    cp "$HOME_ZSHRC" "$BACKUP_DIR/zshrc"
+    echo "  Backed up: ~/.zshrc"
+  fi
+
+  if [[ -d "$HOME_ZSH_DIR" ]]; then
+    cp -r "$HOME_ZSH_DIR" "$BACKUP_DIR/.zsh"
+    echo "  Backed up: ~/.zsh/"
+  fi
+
+  echo ""
+}
+
+# ============================================================================
+# DEPLOY FILES
+# ============================================================================
+
+deploy_files() {
+  echo -e "${YELLOW}Deploying configuration files...${NC}"
+
+  # Create ~/.zsh directory
+  mkdir -p "$HOME_ZSH_DIR"
+
+  # Copy .zshrc
+  cp "$LOCAL_ZSHRC" "$HOME_ZSHRC"
+  echo -e "  ${GREEN}Deployed:${NC} ~/.zshrc"
+
+  # Copy all .zsh files
+  for local_file in "$LOCAL_ZSH_DIR"/*.zsh; do
+    [[ -f "$local_file" ]] || continue
+    local filename=$(basename "$local_file")
+    cp "$local_file" "$HOME_ZSH_DIR/$filename"
+    echo -e "  ${GREEN}Deployed:${NC} ~/.zsh/$filename"
+  done
+
+  echo ""
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+# Check local files exist
+if [[ ! -f "$LOCAL_ZSHRC" ]]; then
+  echo -e "${RED}Error: $LOCAL_ZSHRC not found${NC}"
+  exit 1
+fi
+
+if [[ ! -d "$LOCAL_ZSH_DIR" ]]; then
+  echo -e "${RED}Error: $LOCAL_ZSH_DIR not found${NC}"
+  exit 1
+fi
+
+echo "Local source:  $SCRIPT_DIR"
+echo "Deploy target: $HOME"
+echo ""
+
+# Check for remote additions
+if ! check_remote_additions; then
+  if [[ $FORCE -eq 0 ]]; then
+    echo -e "${RED}Remote has additions not in local repository.${NC}"
+    echo "Please review and add them to local first, or use --force to override."
+    exit 1
+  else
+    echo -e "${YELLOW}--force specified, continuing despite remote additions...${NC}"
+  fi
+else
+  echo -e "${GREEN}No remote additions detected.${NC}"
+fi
+echo ""
+
+# Show diffs
+if ! show_diffs; then
+  echo -e "${GREEN}No differences found. Nothing to deploy.${NC}"
+  exit 0
+fi
+
+# Confirm deployment
+if [[ $FORCE -eq 0 ]]; then
+  echo -e "${YELLOW}Ready to deploy. This will overwrite existing files.${NC}"
+  read -p "Continue? [y/N] " -n 1 -r
+  echo ""
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    exit 1
+  fi
+fi
+
+# Create backups and deploy
+create_backups
+deploy_files
+
+echo -e "${GREEN}=== Deployment complete! ===${NC}"
+echo ""
+echo "Backups saved to: $BACKUP_DIR"
+echo ""
+echo "To activate, run:"
+echo "  source ~/.zshrc"
+echo ""
+echo "Quick help:"
+echo "  ghelp    - Git commands"
+echo "  dkhelp   - Docker commands"
+echo "  hunt -h  - Search commands"
